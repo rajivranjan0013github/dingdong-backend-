@@ -1,0 +1,28 @@
+import mongoose from "mongoose";
+
+const QuestionBookSchema = new mongoose.Schema({
+  user : {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+  },
+  topic : {
+    type: String,
+  },
+  prompt : String,
+  questions : [{
+    question : String,
+    options : [String],
+    answer : Number,
+    explanation : String,
+    userAnswer : Number,
+  }],
+  status : {
+    type: String,
+    enum: ["pending", "completed"],
+    default: "pending",
+  },
+}, { timestamps: true });
+
+const QuestionBook = mongoose.model("QuestionBook", QuestionBookSchema);
+
+export default QuestionBook;
