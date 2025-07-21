@@ -4,7 +4,7 @@ import User from "../models/userSchema.js";
 const router = express.Router();
 
 router.post("/", async (req, res) => {
-    const { questions, user, questionBookId } = req.body;
+    const { questions, user, questionBookId, ...remaining } = req.body;
     try {
         let questionBook;
         
@@ -21,7 +21,7 @@ router.post("/", async (req, res) => {
             
             res.status(200).json(questionBook);
         } else {
-            questionBook = new QuestionBook({ questions, user });
+            questionBook = new QuestionBook({ questions, user, ...remaining });
             await questionBook.save();
             res.status(201).json(questionBook);
         }
@@ -31,7 +31,6 @@ router.post("/", async (req, res) => {
 });
 
 router.get("/:id", async (req, res) => {
-    console.log('running');
     
     const { id } = req.params;
     try {
