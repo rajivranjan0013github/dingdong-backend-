@@ -4,14 +4,14 @@ import User from "../models/userSchema.js";
 const router = express.Router();
 
 router.post("/", async (req, res) => {
-    const { questions, user, questionBookId, ...remaining } = req.body;
+    const { questions, user, questionBookId, status='pending', ...remaining } = req.body;
     try {
         let questionBook;
         
         if (questionBookId) {
             questionBook = await QuestionBook.findByIdAndUpdate(
                 questionBookId,
-                { questions },
+                { questions, status },
                 { new: true, runValidators: true }
             );
             

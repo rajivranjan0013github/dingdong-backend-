@@ -3,7 +3,7 @@ import QuestionBook from '../models/questionBookSchema.js';
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
 
-const genAI = new GoogleGenerativeAI("");
+const genAI = new GoogleGenerativeAI("AIzaSyAVUl3uVHD3LKbihw49wxB5aVr3TpSyWZ0");
 // console.log('gemini api key', process.env.GEMINI_API_KEY);
 
 const router = express.Router();
