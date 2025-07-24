@@ -4,7 +4,6 @@ import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 dotenv.config({ path: "../config/config.env" });
 
-// console.log('gemini api key', process.env.GEMINI_API_KEY);
 
 const router = express.Router();
 function extractJsonFromResponse(text) {
@@ -28,7 +27,7 @@ function extractJsonFromResponse(text) {
 // get all topics
 router.get("/", async (req, res) => {
   try {
-    const topics = await QuestionBook.find().sort({ createdAt: -1 });
+    const topics = await QuestionBook.find().sort({ createdAt: -1 }).select("-questions");
     res.status(200).json(topics);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -38,7 +37,6 @@ router.get("/", async (req, res) => {
 // generate questions
 router.post("/generate-topic", async (req, res) => {
   const { topic } = req.body;
-  console.log(process.env.GEMINI_API_KEY);
   const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
 
   const schema = {
@@ -126,7 +124,6 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
       },
     });
     const generatedText = result.text;
-    console.log(generatedText);
     const parsedData = extractJsonFromResponse(generatedText);
 
     const newQuestionBook = new QuestionBook({
@@ -165,10 +162,6 @@ router.post("/more-questions", async (req, res) => {
     }
 
     const { topic, questions: existingQuestions } = questionBook;
-
-    // Log existing questions for debugging or to inform the AI later
-    console.log("Existing Topic:", topic);
-    console.log("Existing Questions:", existingQuestions.length);
 
     const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
 
@@ -254,7 +247,6 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
       },
     });
     const generatedText = result.text;
-    console.log(generatedText);
 
     const parsedData = JSON.parse(generatedText);
 

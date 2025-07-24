@@ -1,18 +1,20 @@
 import express from "express";
 import QuestionBook from "../models/questionBookSchema.js";
-import User from "../models/userSchema.js";
-import { GoogleGenAI } from "@google/genai";
 const router = express.Router();
 
 router.post("/", async (req, res) => {
-  const { questions, user, questionBookId } = req.body;
+  const { questions, user, questionBookId, status='pending'} = req.body;
+  const questionLength = questions.length;
+  const answeredLength = questions.filter(q => q.userAnswer !== undefined).length;
+  const correctLength = questions.filter(q => q.userAnswer === q.answer).length;
+  
   try {
     let questionBook;
 
     if (questionBookId) {
       questionBook = await QuestionBook.findByIdAndUpdate(
         questionBookId,
-        { questions },
+        { questions, status, questionLength, answeredLength, correctLength },
         { new: true, runValidators: true }
       );
 
@@ -22,7 +24,7 @@ router.post("/", async (req, res) => {
 
       res.status(200).json(questionBook);
     } else {
-      questionBook = new QuestionBook({ questions, user });
+      questionBook = new QuestionBook({ questions, user, questionLength, answeredLength, correctLength });
       await questionBook.save();
       res.status(201).json(questionBook);
     }
@@ -34,7 +36,6 @@ router.post("/", async (req, res) => {
 
 
 router.get("/:id", async (req, res) => {
-  console.log("running");
 
   const { id } = req.params;
   try {
