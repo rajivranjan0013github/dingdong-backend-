@@ -15,8 +15,21 @@ const QuestionBookSchema = new mongoose.Schema({
     answer : Number,
     explanation : String,
     userAnswer : Number,
-  }],
-  status : {
+    },
+  ],
+  questionLength: {
+    type: Number,
+    default: 0,
+  },
+  answeredLength: {
+    type: Number,
+    default: 0,
+  },
+  correctLength: {
+    type: Number,
+    default: 0,
+  },
+  status: {
     type: String,
     enum: ["pending", "completed"],
     default: "pending",
