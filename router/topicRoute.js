@@ -24,11 +24,23 @@ function extractJsonFromResponse(text) {
   }
 }
 
-// get all topics
+// get all topics (with pagination)
 router.get("/", async (req, res) => {
   try {
-    const topics = await QuestionBook.find().sort({ createdAt: -1 }).select("-questions");
-    res.status(200).json(topics);
+    let { skip = 0, limit = 10 } = req.query;
+    skip = parseInt(skip);
+    limit = parseInt(limit);
+
+    const totalTopics = await QuestionBook.countDocuments();
+    const topics = await QuestionBook.find()
+      .sort({ createdAt: -1 })
+      .select("-questions")
+      .skip(skip)
+      .limit(limit);
+
+    const hasMore = skip + topics.length < totalTopics;
+    
+    res.status(200).json({ topics, hasMore });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
