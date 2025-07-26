@@ -2,8 +2,10 @@ import express from "express";
 import QuestionBook from "../models/questionBookSchema.js";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { verifyToken } from "../middleware/authmiddleware.js";
+import mongoose from "mongoose";
+import User from "../models/userSchema.js";
 dotenv.config({ path: "../config/config.env" });
-
 
 const router = express.Router();
 function extractJsonFromResponse(text) {
@@ -25,53 +27,44 @@ function extractJsonFromResponse(text) {
 }
 
 // get all topics (with pagination)
-router.get("/", async (req, res) => {
+
+
+
+router.get("/", verifyToken, async (req, res) => {
+  const userId = req.userId;
+  let { skip = 0, limit = 10 } = req.query;
+  skip = parseInt(skip);
+  limit = parseInt(limit);
+
   try {
-    let { skip = 0, limit = 10 } = req.query;
-    skip = parseInt(skip);
-    limit = parseInt(limit);
+    const user = await User.findById(userId).select("questionBook");
+    const total = user.questionBook.length;
 
-    const totalTopics = await QuestionBook.countDocuments();
-    const topics = await QuestionBook.find()
+    // Slice only the required IDs
+    const questionBookIds = user.questionBook
+      .slice(skip, skip + limit);
+
+    const topics = await QuestionBook.find({
+      _id: { $in: questionBookIds },
+    })
       .sort({ createdAt: -1 })
-      .select("-questions")
-      .skip(skip)
-      .limit(limit);
+      .select("-questions"); // Exclude heavy data
 
-    const hasMore = skip + topics.length < totalTopics;
-    
-    res.status(200).json({ topics, hasMore });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.log(topics);
+      res.status(200).json({
+      topics,
+      hasMore: skip + topics.length < total,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
 // generate questions
-router.post("/generate-topic", async (req, res) => {
+router.post("/generate-topic", verifyToken, async (req, res) => {
   const { topic } = req.body;
-  const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
-
-  const schema = {
-    type: Type.OBJECT,
-    properties: {
-      prompt: { type: Type.STRING },
-      topic: { type: Type.STRING },
-      questions: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            question: { type: Type.STRING },
-            options: { type: Type.ARRAY, items: { type: Type.STRING } },
-            answer: { type: Type.NUMBER },
-            explanation: { type: Type.STRING },
-          },
-          required: ["question", "options", "answer", "explanation"],
-        },
-      },
-    },
-    required: ["prompt", "topic", "questions"],
-  };
+  const userId = req.userId;
+  let session;
 
   if (!topic) {
     return res.status(400).json({
@@ -81,6 +74,34 @@ router.post("/generate-topic", async (req, res) => {
   }
 
   try {
+    session = await mongoose.startSession();
+    session.startTransaction();
+
+    const user = await User.findById(userId).session(session);
+    const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
+
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        prompt: { type: Type.STRING },
+        topic: { type: Type.STRING },
+        questions: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              question: { type: Type.STRING },
+              options: { type: Type.ARRAY, items: { type: Type.STRING } },
+              answer: { type: Type.NUMBER },
+              explanation: { type: Type.STRING },
+            },
+            required: ["question", "options", "answer", "explanation"],
+          },
+        },
+      },
+      required: ["prompt", "topic", "questions"],
+    };
+
     const geminiPrompt = `You are the worlds best question generator.
 
    The user input is : ${topic}
@@ -142,17 +163,30 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
       prompt: parsedData.prompt,
       topic: parsedData.topic,
       questions: parsedData.questions,
+      user: user._id,
     });
 
-    await newQuestionBook.save();
+    user.questionBook.push(newQuestionBook._id);
+    await user.save({ session });
+    await newQuestionBook.save({ session });
+    console.log(newQuestionBook);
+
+    await session.commitTransaction();
 
     res.status(200).json({
       message: "Questions generated and saved successfully!",
       data: newQuestionBook,
     });
   } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
     console.error("Error generating questions with Gemini API:", error);
     res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
   }
 });
 
