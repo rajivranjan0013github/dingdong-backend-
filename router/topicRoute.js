@@ -28,8 +28,6 @@ function extractJsonFromResponse(text) {
 
 // get all topics (with pagination)
 
-
-
 router.get("/", verifyToken, async (req, res) => {
   const userId = req.userId;
   let { skip = 0, limit = 10 } = req.query;
@@ -41,8 +39,7 @@ router.get("/", verifyToken, async (req, res) => {
     const total = user.questionBook.length;
 
     // Slice only the required IDs
-    const questionBookIds = user.questionBook
-      .slice(skip, skip + limit);
+    const questionBookIds = user.questionBook.slice(skip, skip + limit);
 
     const topics = await QuestionBook.find({
       _id: { $in: questionBookIds },
@@ -51,7 +48,7 @@ router.get("/", verifyToken, async (req, res) => {
       .select("-questions"); // Exclude heavy data
 
     console.log(topics);
-      res.status(200).json({
+    res.status(200).json({
       topics,
       hasMore: skip + topics.length < total,
     });
