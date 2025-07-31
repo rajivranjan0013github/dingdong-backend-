@@ -50,7 +50,6 @@ router.get("/", verifyToken, async (req, res) => {
       .sort({ createdAt: -1 })
       .select("-questions"); // Exclude heavy data
 
-    console.log(topics);
       res.status(200).json({
       topics,
       hasMore: skip + topics.length < total,
@@ -163,13 +162,13 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
       prompt: parsedData.prompt,
       topic: parsedData.topic,
       questions: parsedData.questions,
+      questionLength: parsedData?.questions?.length,
       user: user._id,
     });
 
     user.questionBook.push(newQuestionBook._id);
     await user.save({ session });
     await newQuestionBook.save({ session });
-    console.log(newQuestionBook);
 
     await session.commitTransaction();
 

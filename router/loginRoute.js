@@ -42,10 +42,8 @@ router.post("/google/loginSignUp", async (req, res) => {
         name: payload.name,
       });
     }
-    console.log(JWT_SECRET);
 
     // Generate JWT token
-    console.log(JWT_SECRET);
     const authToken = jwt.sign({ id: user._id }, JWT_SECRET);
 
     res.json({
