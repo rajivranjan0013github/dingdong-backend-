@@ -6,11 +6,20 @@ const router = express.Router();
 
 router.post("/", verifyToken, async (req, res) => {
   const userId = req.userId;
-  const { questions =[], questionBookId, status='pending', deepLink=false} = req.body;
+  const {
+    questions = [],
+    questionBookId,
+    status = "pending",
+    deepLink = false,
+  } = req.body;
   const questionLength = questions.length;
-  const answeredLength = questions.filter(q => q.userAnswer !== undefined).length;
-  const correctLength = questions.filter(q => q.userAnswer === q.answer).length;
-  
+  const answeredLength = questions.filter(
+    (q) => q.userAnswer !== undefined
+  ).length;
+  const correctLength = questions.filter(
+    (q) => q.userAnswer === q.answer
+  ).length;
+
   try {
     let questionBook;
 
@@ -27,9 +36,19 @@ router.post("/", verifyToken, async (req, res) => {
 
       res.status(200).json(questionBook);
     } else {
-      const previousQuestionBook = await QuestionBook.findById(questionBookId).select('-questions');
+      const previousQuestionBook = await QuestionBook.findById(
+        questionBookId
+      ).select("-questions");
 
-      questionBook = new QuestionBook({ questions, user : userId, questionLength, answeredLength, correctLength, topic : previousQuestionBook.topic, prompt : previousQuestionBook.prompt});
+      questionBook = new QuestionBook({
+        questions,
+        user: userId,
+        questionLength,
+        answeredLength,
+        correctLength,
+        topic: previousQuestionBook.topic,
+        prompt: previousQuestionBook.prompt,
+      });
       const user = await User.findById(userId);
       if (!user) {
         return res.status(404).json({ message: "User not found" });
@@ -44,10 +63,7 @@ router.post("/", verifyToken, async (req, res) => {
   }
 });
 
-
-
 router.get("/:id", async (req, res) => {
-
   const { id } = req.params;
   try {
     const questionBook = await QuestionBook.findById(id);

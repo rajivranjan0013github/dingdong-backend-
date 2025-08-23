@@ -107,6 +107,7 @@ router.post("/generate-topic", verifyToken, async (req, res) => {
     2. Infer whether the user wants questions related to an exam (like SSC, IBPS, GRE,SAT, JEE, NEET, etc.) or specific subjects (e.g., English, Chemistry, GK).
     3. For the referred exam, generate questions accordingly keep variety in the questions easy medium and hard.
     3. Use that understanding to generate relevant 25 questions accordingly.
+    4  Use LaTeX  formatting for the  mathematical equations wherever present in the questions and options or explanations.
 
     Options format for the questions:
       1. Each question must have exactly 4 options.
@@ -153,6 +154,7 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
       },
     });
     const generatedText = result.text;
+    console.log(generatedText);
     const parsedData = extractJsonFromResponse(generatedText);
 
     const newQuestionBook = new QuestionBook({
