@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { verifyToken } from "../middleware/authmiddleware.js";
 import mongoose from "mongoose";
 import User from "../models/userSchema.js";
+import { generateExplanationPrompt } from "../utils/promptTemplates.js";
 dotenv.config({ path: "../config/config.env" });
 
 const router = express.Router();
@@ -35,24 +36,46 @@ router.get("/", verifyToken, async (req, res) => {
   limit = parseInt(limit);
 
   try {
-    const user = await User.findById(userId).select("questionBook");
-    const total = user.questionBook.length;
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
-    // Slice only the required IDs
-    const questionBookIds = user.questionBook.slice(skip, skip + limit);
+    // Get total count for pagination
+    const total = await QuestionBook.countDocuments({ _id: { $in: user.questionBook } });
 
-    const topics = await QuestionBook.find({
-      _id: { $in: questionBookIds },
-    })
+    // Use proper MongoDB pagination
+    const topics = await QuestionBook.find({ _id: { $in: user.questionBook } })
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .select("-questions"); // Exclude heavy data
 
     res.status(200).json({
       topics,
       hasMore: skip + topics.length < total,
+      total
     });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error fetching topics:', err);
+    // Handle specific error cases
+    if (err.name === 'CastError') {
+      return res.status(400).json({ 
+        message: 'Invalid ID format',
+        error: 'INVALID_ID'
+      });
+    }
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({ 
+        message: 'Validation failed',
+        error: 'VALIDATION_ERROR',
+        details: err.errors
+      });
+    }
+    res.status(500).json({ 
+      message: 'Internal server error while fetching topics',
+      error: 'INTERNAL_ERROR'
+    });
   }
 });
 
@@ -100,7 +123,7 @@ router.post("/generate-topic", verifyToken, async (req, res) => {
 
     const geminiPrompt = `You are the worlds best question generator.
 
-   The user input is : ${topic}
+The user input is : ${topic}
 
    Your task:
     1. Understand the topic(s), difficulty level, and exam-style (if any) from the user input — even if casually phrased.
@@ -120,7 +143,7 @@ router.post("/generate-topic", verifyToken, async (req, res) => {
 
 
 Format of the response:
-      {
+{
   "prompt": "prompt",
   "topic": "topic",
   "questions": [
@@ -237,10 +260,10 @@ router.post("/more-questions", async (req, res) => {
 
     const geminiPrompt = `You are the world's best question generator.
 
-    The current topic is: ${topic}
+The current topic is: ${topic}
 
-    Here are the previously generated questions on this topic THAT CANNOT BE REPEATED:
-    ${existingQuestionsText}
+Here are the previously generated questions on this topic THAT CANNOT BE REPEATED:
+${existingQuestionsText}
 
     Your task:
     1. Generate 25 NEW questions related to the topic: "${topic}".
@@ -259,7 +282,7 @@ router.post("/more-questions", async (req, res) => {
 
 
 Format of the response:
-      {
+{
   "prompt": "prompt",
   "topic": "topic",
   "questions": [
@@ -307,6 +330,35 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
     });
   } catch (error) {
     console.error("Error generating more questions with Gemini API:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get AI explanation for a question
+router.post("/explain-question", verifyToken, async (req, res) => {
+  const { question, options, correctAnswer, userAnswer, originalExplanation } = req.body;
+
+  try {
+    const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
+
+    const prompt = generateExplanationPrompt(
+      question,
+      options,
+      correctAnswer,
+      userAnswer,
+      originalExplanation
+    );
+
+    const result = await genAI.models.generateContent({
+      model: "gemini-2.5-flash-lite-preview-06-17",
+      contents: [{ text: prompt }],
+    });
+
+    res.status(200).json({
+      explanation: result.text,
+    });
+  } catch (error) {
+    console.error("Error generating explanation:", error);
     res.status(500).json({ message: error.message });
   }
 });
