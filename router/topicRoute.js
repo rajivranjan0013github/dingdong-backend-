@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { verifyToken } from "../middleware/authmiddleware.js";
 import mongoose from "mongoose";
 import User from "../models/userSchema.js";
+import Busboy from "busboy";
 import { generateExplanationPrompt } from "../utils/promptTemplates.js";
 dotenv.config({ path: "../config/config.env" });
 
@@ -27,7 +28,201 @@ function extractJsonFromResponse(text) {
   }
 }
 
-// get all topics (with pagination)
+router.post(
+  "/upload-pdf",
+  verifyToken,
+  (req, res, next) => {
+    console.log("uploading pdf");
+    const busboy = Busboy({ headers: req.headers });
+    let pdfBuffer = null;
+    
+
+    busboy.on("file", (name, file, info) => {
+      console.log("name", name);
+      console.log("file", file);
+      console.log("info", info);
+      if (info?.mimeType === "application/pdf") {
+        const chunks = [];
+        file.on("data", (chunk) => chunks.push(chunk));
+        file.on("end", () => {
+          console.log("chunks", chunks);
+          pdfBuffer = Buffer.concat(chunks);
+        });
+      }
+    });
+
+    busboy.on("field", (fieldname, val) => {
+      req.body[fieldname] = val;
+    });
+
+    busboy.on("finish", () => {
+      if (!pdfBuffer) {
+        console.log("No PDF file uploaded.");
+        return res.status(400).json({ message: "No PDF file uploaded." });
+      }
+      console.log("pdfBuffer", pdfBuffer);
+      req.file = {
+        buffer: pdfBuffer,
+        mimetype: "application/pdf",
+        originalname: "uploaded.pdf",
+      };
+      next();
+    });
+
+    req.pipe(busboy);
+  },
+  async (req, res) => {
+    const userId = req.userId;
+    console.log(userId);
+    let session;
+    console.log(req.file);
+    console.log(req.file.buffer);
+
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ message: "No PDF file uploaded." });
+    }
+    const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
+    try {
+      // 1️⃣ Upload file to Google Files API
+      const fileBlob = new Blob([req.file.buffer], { type: 'application/pdf' });
+
+      const fileResp = await genAI.files.upload({
+        file: fileBlob,
+        config: {
+          displayName: req.file.originalname,
+
+        },
+      });
+      console.log(fileResp);
+
+      const schema = {
+        type: Type.OBJECT,
+        properties: {
+          prompt: { type: Type.STRING },
+          topic: { type: Type.STRING },
+          questions: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                question: { type: Type.STRING },
+                options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                answer: { type: Type.NUMBER },
+                explanation: { type: Type.STRING },
+              },
+              required: ["question", "options", "answer", "explanation"],
+            },
+          },
+        },
+        required: ["prompt", "topic", "questions"],
+      };
+
+      const geminiPrompt = `You are the worlds best question generator.
+    
+
+
+    Your TASK is:
+
+    1. You are given a pdf file. This Pdf constains questions and its respective options and answers and the explanation for the answer.
+    2. Some times explanation is not present in the pdf file so you need to generate the explanation for the answer.
+    3. You need to extract the questions and its respective options and answers and the explanation for the answer from the pdf file.
+    4. The file may contains useless information like table of contents, index, etc so be careful and extract only the questions and its respective options and answers and the explanation for the answer.
+    5. The questions should be in the same language as the pdf file.
+    6. Do not miss any QUESTIONS given in the pdf file.
+    7  The questions should be in HTML format and the latex formatting for the mathematical equations should be used.
+  
+
+    Options format for the questions:
+      1. Each question must have exactly 4 options.
+      2. Options must be stored in an array where:
+        - The **first option** is at **index 0**
+        - The second at index 1, and so on.
+
+    Answer format for the questions:
+      1. The answer must be a number between 0 and 3 ,and and integer like 0,1,2,3 as you will be follwing 0-based indexing.
+
+
+Format of the response:
+      {
+  "prompt": "prompt",
+  "topic": "topic",
+  "questions": [
+    {
+      "question": "What is the capital of France?",
+      "options": ["London", "Paris", "Rome", "Berlin"],
+      "answer": 1,
+      "explanation": "Paris is the capital of France."
+    },
+    {
+      "question": "Who wrote 'Hamlet'?",
+      "options": ["William Shakespeare", "Mark Twain", "Charles Dickens", "Jane Austen"],
+      "answer": 0,
+      "explanation": "Hamlet is a famous play written by William Shakespeare."
+    }
+  ]
+}
+
+As you can see the answer is an integer between 0 and 3 following 0-based indexing.
+ 0-based indexing means that the first option is at index 0, the second at index 1, and so on.
+
+
+    `;
+      const result = await genAI.models.generateContent({
+        model: "gemini-2.5-flash-lite-preview-06-17",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: geminiPrompt },
+              { fileData: { fileUri: fileResp.uri, mimeType: fileResp.mimeType } },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: schema,
+        },
+      });
+      console.log(result.text);
+
+      const parsedData = extractJsonFromResponse(result.text);
+
+      if (!parsedData?.questions?.length) {
+        return res.status(500).json({ message: "Failed to generate questions from PDF." });
+      }
+
+      session = await mongoose.startSession();
+      session.startTransaction();
+
+      const user = await User.findById(userId).session(session);
+
+      const newQuestionBook = new QuestionBook({
+        prompt: parsedData.prompt,
+        topic: parsedData.topic || "Questions from PDF",
+        questions: parsedData.questions,
+        questionLength: parsedData.questions.length,
+        user: user._id,
+      });
+
+      user.questionBook.push(newQuestionBook._id);
+      await user.save({ session });
+      await newQuestionBook.save({ session });
+      await session.commitTransaction();
+
+      res.status(200).json({
+        message: "Questions generated from PDF and saved successfully!",
+        data: newQuestionBook,
+      });
+    } catch (error) {
+      if (session) await session.abortTransaction();
+      console.error("Error processing PDF:", error);
+      res.status(500).json({ message: error.message });
+    } finally {
+      if (session) session.endSession();
+    }
+  }
+);
+
 
 router.get("/", verifyToken, async (req, res) => {
   const userId = req.userId;
