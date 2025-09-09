@@ -530,7 +530,7 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
 });
 
 // Get AI explanation for a question
-router.post("/explain-question", verifyToken, async (req, res) => {
+router.post("/explain-question", async (req, res) => {
   const { question, options, correctAnswer, userAnswer, originalExplanation } = req.body;
 
   try {
