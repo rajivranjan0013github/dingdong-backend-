@@ -1,4 +1,4 @@
-export const generateExplanationPrompt = (question, options, correctAnswer, userAnswer, originalExplanation) => {
+export const generateExplanationPrompt = (question, options, correctAnswer, userAnswer, originalExplanation,preferredLanguage) => {
   const optionsText = options.map((opt, idx) => `${String.fromCharCode(65 + idx)}. ${opt}`).join('\n');
   
   const correctOptionLetter = String.fromCharCode(65 + correctAnswer);
@@ -36,7 +36,7 @@ ${optionsText}
 
 ---
 **Your Task:**
-Generate a new explanation following this exact structure, ensuring each section provides unique, non-repetitive information.
+Generate a new explanation following this exact structure, with the language ${preferredLanguage||"English"} ensuring each section provides unique, non-repetitive information.
 
 ### ✅ The Correct Answer Explained
 **${correctOptionLetter}. ${correctOptionText}**

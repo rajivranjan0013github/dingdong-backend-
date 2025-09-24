@@ -15,6 +15,7 @@ const UserSchema = new mongoose.Schema({
       "Please add a valid email",
     ],
   },
+  preferredLanguage: String,
   gender: {
     type: String,
     enum: ["Male", "Female"],
@@ -22,6 +23,10 @@ const UserSchema = new mongoose.Schema({
   questionBook : [{
     type: mongoose.Schema.Types.ObjectId,
     ref: "QuestionBook",
+  }],
+  solve : [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Solve",
   }],
 }, { timestamps: true });
 

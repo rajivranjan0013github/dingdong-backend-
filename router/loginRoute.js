@@ -17,7 +17,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 // Google authentication route
 router.post("/google/loginSignUp", async (req, res) => {
   try {
-    const { token } = req.body;
+    const { token , preferredLanguage} = req.body;
 
     if (!token) {
       return res.status(400).json({ error: "Token is required" });
@@ -40,6 +40,7 @@ router.post("/google/loginSignUp", async (req, res) => {
       user = await User.create({
         email: payload.email,
         name: payload.name,
+        preferredLanguage: preferredLanguage,
       });
     }
 
@@ -53,6 +54,8 @@ router.post("/google/loginSignUp", async (req, res) => {
         id: user._id,
         email: user.email,
         name: user.name,
+        preferredLanguage:user.preferredLanguage||"English"
+        
       },
     });
   } catch (error) {

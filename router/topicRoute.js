@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { verifyToken } from "../middleware/authmiddleware.js";
 import mongoose from "mongoose";
 import User from "../models/userSchema.js";
+import Solve from "../models/solve.js";
 import Busboy from "busboy";
 import { generateExplanationPrompt } from "../utils/promptTemplates.js";
 dotenv.config({ path: "../config/config.env" });
@@ -28,24 +29,51 @@ function extractJsonFromResponse(text) {
   }
 }
 
+// Ensure LaTeX-style backslashes are doubled inside math delimiters.
+// Handles $...$, $$...$$, \(...\), and \[...\]. Idempotent on already-doubled sequences.
+function ensureDoubleBackslashesInMath(text) {
+  if (typeof text !== 'string') return text;
+
+  // Fix single "\" → "\\", then collapse any 4+ "\" to exactly 2
+  function fix(inner) {
+    let out = inner.replace(/(?<!\\)\\(?!\\)/g, '\\\\');  // single → double
+    out = out.replace(/\\\\{2,}/g, '\\\\');               // 4+ → 2
+    return out;
+  }
+
+  // $...$  or  $$...$$  → always return $...$ (single dollar)
+  text = text.replace(/(\${1,2})([\s\S]*?)(\1)/g,
+    (_, open, inner) => '$' + fix(inner) + '$'
+  );
+
+  // \(...\)
+  text = text.replace(/\\\(([\s\S]*?)\\\)/g,
+    (_, inner) => '\\(' + fix(inner) + '\\)'
+  );
+
+  // \[...\]
+  text = text.replace(/\\\[([\s\S]*?)\\\]/g,
+    (_, inner) => '\\[' + fix(inner) + '\\]'
+  );
+
+  return text;
+}
+
+
 router.post(
   "/upload-pdf",
   verifyToken,
   (req, res, next) => {
-    console.log("uploading pdf");
     const busboy = Busboy({ headers: req.headers });
     let pdfBuffer = null;
     
 
     busboy.on("file", (name, file, info) => {
-      console.log("name", name);
-      console.log("file", file);
-      console.log("info", info);
+     
       if (info?.mimeType === "application/pdf") {
         const chunks = [];
         file.on("data", (chunk) => chunks.push(chunk));
         file.on("end", () => {
-          console.log("chunks", chunks);
           pdfBuffer = Buffer.concat(chunks);
         });
       }
@@ -57,10 +85,8 @@ router.post(
 
     busboy.on("finish", () => {
       if (!pdfBuffer) {
-        console.log("No PDF file uploaded.");
         return res.status(400).json({ message: "No PDF file uploaded." });
       }
-      console.log("pdfBuffer", pdfBuffer);
       req.file = {
         buffer: pdfBuffer,
         mimetype: "application/pdf",
@@ -73,11 +99,8 @@ router.post(
   },
   async (req, res) => {
     const userId = req.userId;
-    console.log(userId);
     let session;
-    console.log(req.file);
-    console.log(req.file.buffer);
-
+   
     if (!req.file || !req.file.buffer) {
       return res.status(400).json({ message: "No PDF file uploaded." });
     }
@@ -93,7 +116,6 @@ router.post(
 
         },
       });
-      console.log(fileResp);
 
       const schema = {
         type: Type.OBJECT,
@@ -183,9 +205,9 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
           responseSchema: schema,
         },
       });
-      console.log(result.text);
-
-      const parsedData = extractJsonFromResponse(result.text);
+      // Pre-process raw JSON text from model to preserve LaTeX backslashes inside math
+      const rawText = ensureDoubleBackslashesInMath(result.text);
+      const parsedData = extractJsonFromResponse(rawText);
 
       if (!parsedData?.questions?.length) {
         return res.status(500).json({ message: "Failed to generate questions from PDF." });
@@ -223,6 +245,279 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
   }
 );
 
+
+// Upload an image (photo of a question/doubt) and generate questions/solutions
+router.post(
+  "/upload-image",
+  verifyToken,
+  (req, res, next) => {
+    const busboy = Busboy({ headers: req.headers });
+    let imageBuffer = null;
+    let imageMimeType = null;
+    let originalname = "uploaded-image";
+    busboy.on("file", (name, file, info) => {
+      const { filename, mimeType } = info || {};
+      if (mimeType && mimeType.startsWith("image/")) {
+        imageMimeType = mimeType;
+        if (filename) originalname = filename;
+        const chunks = [];
+        file.on("data", chunk => chunks.push(chunk));
+        file.on("end", () => {
+          imageBuffer = Buffer.concat(chunks);
+        });
+      } else {
+        // Unsupported file type; drain the stream
+        file.resume();
+      }
+    });
+
+    busboy.on("field", (fieldname, val) => {
+      req.body[fieldname] = val;
+    });
+
+    busboy.on("finish", () => {
+      if (!imageBuffer) {
+        return res.status(400).json({ message: "No image file uploaded." });
+      }
+      req.file = {
+        buffer: imageBuffer,
+        mimetype: imageMimeType || "image/jpeg",
+        originalname,
+      };
+      next();
+    });
+
+    req.pipe(busboy);
+  },
+  async (req, res) => {
+    const userId = req.userId;
+    let session;
+    try {
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ message: "No image file uploaded." });
+      }
+
+      const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
+
+      // 1️⃣ Upload image to Google Files API
+      const fileBlob = new Blob([req.file.buffer], { type: req.file.mimetype });
+      const fileResp = await genAI.files.upload({
+        file: fileBlob,
+        config: { displayName: req.file.originalname },
+      });
+
+      // 2️⃣ Ask Gemini to extract/solve the doubt and output MCQ-compatible structure
+      const schema = {
+        type: Type.OBJECT,
+        properties: {
+          question: { type: Type.STRING },
+          answer: { type: Type.STRING }
+        },
+        required: ["question", "answer"],
+      };
+      
+      const geminiPrompt = `You are the world's best tutor for solving doubts from images.
+
+Task:
+1. You are given an image that may contain a question/problem (math, reasoning, science, etc.).
+2. Extract the main question clearly from the image.
+3. Solve it and provide the final answer directly.
+4. If equations are involved, use MathJax formatting correctly You make mistakes in the MathJax formatting so be careful.
+5. The format of the answer should be in Markdown format.
+5. The output must follow this JSON shape:
+
+{
+  "question": "...",
+  "answer": "..."
+}`;
+      
+   
+
+      const result = await genAI.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: geminiPrompt },
+              { fileData: { fileUri: fileResp.uri, mimeType: fileResp.mimeType } },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: schema,
+        },
+      });
+
+      // Pre-process raw JSON text from model to preserve LaTeX backslashes inside math
+      
+      const rawText = ensureDoubleBackslashesInMath(result.text);
+  
+      const parsed = extractJsonFromResponse(rawText);
+      if (!parsed?.question || !parsed?.answer) {
+        return res.status(500).json({ message: "Failed to extract a solved Q&A from image." });
+      }
+
+      // 3️⃣ Persist as a Solve (single Q&A), not a QuestionBook
+      session = await mongoose.startSession();
+      session.startTransaction();
+
+      // Normalize backslashes so LaTeX reaches the client with \\ consistently
+     
+
+      const savedSolve = await Solve.create([
+        { question: parsed.question, answer: parsed.answer, user: userId},
+      ], { session });
+
+      await session.commitTransaction();
+
+      res.status(200).json({
+        message: "Solved Q&A generated from image and saved successfully!",
+        data: savedSolve?.[0],
+      });
+    } catch (error) {
+      if (session) await session.abortTransaction();
+      console.error("Error processing image:", error);
+      res.status(500).json({ message: error.message });
+    } finally {
+      if (session) session.endSession();
+    }
+  }
+);
+
+
+// Generate a new QuestionBook with MCQs related to a solved question
+router.post("/generate-from-solve", verifyToken, async (req, res) => {
+  const userId = req.userId;
+  const { solveId, question, answer, preferredLanguage } = req.body || {};
+
+  let baseQuestion = question;
+  let baseAnswer = answer;
+
+  try {
+    // Optionally fetch the Solve if solveId provided
+    if ((!baseQuestion || !baseAnswer) && solveId) {
+      const solveDoc = await Solve.findById(solveId);
+      if (solveDoc) {
+        baseQuestion = baseQuestion || solveDoc.question;
+        baseAnswer = baseAnswer || solveDoc.answer;
+      }
+    }
+
+    if (!baseQuestion || !baseAnswer) {
+      return res.status(400).json({ message: "Missing base question or answer" });
+    }
+
+    const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
+
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        prompt: { type: Type.STRING },
+        topic: { type: Type.STRING },
+        questions: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              question: { type: Type.STRING },
+              options: { type: Type.ARRAY, items: { type: Type.STRING } },
+              answer: { type: Type.NUMBER },
+              explanation: { type: Type.STRING },
+            },
+            required: ["question", "options", "answer", "explanation"],
+          },
+        },
+      },
+      required: ["prompt", "topic", "questions"],
+    };
+
+    const pl = preferredLanguage || "English";
+    const geminiPrompt = `You are the world's best question setter.
+
+Base solved question is given below. Create a new practice set of 25 high-quality MCQs that are conceptually similar and cover the same underlying ideas, with a healthy mix of  medium, and hard questions.
+
+Rules:
+1) The language of all output must be ${pl}.
+2) Use proper LaTeX formatting for any mathematical expressions in questions, options, and explanations.
+3) Each question must have exactly 4 options.
+4) Answers must use 0-based indexing (0..3) referring to options.
+5) Provide clear, concise explanations. Prefer math where appropriate.
+6) Avoid copying the base question verbatim; vary numbers and context.
+
+Base:
+QUESTION:
+${baseQuestion}
+
+
+
+Respond strictly in this JSON format:
+{
+  "prompt": "Short instruction users saw",
+  "topic": "Short topic name for this practice set",
+  "questions": [
+    {
+      "question": "...",
+      "options": ["...","...","...","..."],
+      "answer": 0,
+      "explanation": "..."
+    }
+  ]
+}`;
+
+    const result = await genAI.models.generateContent({
+      model: "gemini-2.5-flash-lite-preview-06-17",
+      contents: [{ text: geminiPrompt }],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: schema,
+      },
+    });
+
+    const rawText = ensureDoubleBackslashesInMath(result.text);
+    const parsedData = extractJsonFromResponse(rawText);
+
+    if (!parsedData?.questions?.length) {
+      return res.status(500).json({ message: "Failed to generate related questions" });
+    }
+
+    const session = await mongoose.startSession();
+    try {
+      session.startTransaction();
+
+      const user = await User.findById(userId).session(session);
+      const newQuestionBook = new QuestionBook({
+        prompt: parsedData.prompt || "Practice similar problems",
+        topic: parsedData.topic || "Similar Practice Set",
+        questions: parsedData.questions,
+        questionLength: parsedData.questions.length,
+        user: user._id,
+        language: pl,
+        source: "image", // derived from a solved image doubt
+      });
+
+      user.questionBook.push(newQuestionBook._id);
+      await user.save({ session });
+      await newQuestionBook.save({ session });
+      await session.commitTransaction();
+
+      return res.status(200).json({
+        message: "Related questions generated successfully",
+        data: newQuestionBook,
+      });
+    } catch (e) {
+      await session.abortTransaction();
+      console.error(e);
+      return res.status(500).json({ message: e.message });
+    } finally {
+      session.endSession();
+    }
+  } catch (error) {
+    console.error("Error generating from solve:", error);
+    return res.status(500).json({ message: error.message });
+  }
+});
 
 router.get("/", verifyToken, async (req, res) => {
   const userId = req.userId;
@@ -276,7 +571,7 @@ router.get("/", verifyToken, async (req, res) => {
 
 // generate questions
 router.post("/generate-topic", verifyToken, async (req, res) => {
-  const { topic } = req.body;
+  const { topic ,preferredLanguage} = req.body;
   const userId = req.userId;
   let session;
 
@@ -319,6 +614,9 @@ router.post("/generate-topic", verifyToken, async (req, res) => {
     const geminiPrompt = `You are the worlds best question generator.
 
 The user input is : ${topic}
+The user preferred language is : ${preferredLanguage||"English"}
+
+The questions , options , and explanations should be in the same language as the preferred language of the user.
 
    Your task:
     1. Understand the topic(s), difficulty level, and exam-style (if any) from the user input — even if casually phrased.
@@ -372,7 +670,6 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
       },
     });
     const generatedText = result.text;
-    console.log(generatedText);
     const parsedData = extractJsonFromResponse(generatedText);
 
     const newQuestionBook = new QuestionBook({
@@ -381,6 +678,7 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
       questions: parsedData.questions,
       questionLength: parsedData?.questions?.length,
       user: user._id,
+      language: preferredLanguage||"English",
     });
 
     user.questionBook.push(newQuestionBook._id);
@@ -423,7 +721,7 @@ router.post("/more-questions", async (req, res) => {
       return res.status(404).json({ message: "QuestionBook not found." });
     }
 
-    const { topic, questions: existingQuestions } = questionBook;
+    const { topic, questions: existingQuestions ,language} = questionBook;
 
     const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
 
@@ -459,6 +757,10 @@ The current topic is: ${topic}
 
 Here are the previously generated questions on this topic THAT CANNOT BE REPEATED:
 ${existingQuestionsText}
+
+The user preferred language is : ${language||"English"}
+
+The questions , options , and explanations should be in the same language as the preferred language of the user.
 
     Your task:
     1. Generate 25 NEW questions related to the topic: "${topic}".
@@ -531,7 +833,7 @@ As you can see the answer is an integer between 0 and 3 following 0-based indexi
 
 // Get AI explanation for a question
 router.post("/explain-question", async (req, res) => {
-  const { question, options, correctAnswer, userAnswer, originalExplanation } = req.body;
+  const { question, options, correctAnswer, userAnswer, originalExplanation,preferredLanguage } = req.body;
 
   try {
     const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
@@ -541,7 +843,8 @@ router.post("/explain-question", async (req, res) => {
       options,
       correctAnswer,
       userAnswer,
-      originalExplanation
+      originalExplanation,
+      preferredLanguage
     );
 
     const result = await genAI.models.generateContent({

@@ -8,7 +8,12 @@ const QuestionBookSchema = new mongoose.Schema({
   topic : {
     type: String,
   },
+  source:String, //pdf , image , prompt
   prompt : String,
+  language:{
+    type: String,
+    default:"English",
+  },
   questions : [{
     question : String,
     options : [String],
